@@ -17,14 +17,46 @@ permissions:
   statuses: write
 
 jobs:
+  # Fork PRs pause here until a repo maintainer approves in the PRODUCTION environment.
+  # The maintainer should inspect the fork's diff before approving to ensure no
+  # malicious ci/build.sh or other scripts are present before secrets are exposed.
+  approve-fork:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name != github.repository
+    environment: PRODUCTION
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fork PR approved by maintainer
+        run: echo "Fork PR from ${{ github.event.workflow_run.head_repository.full_name }} approved — proceeding with privileged build"
+
+  # Internal PRs (same repo) are trusted and proceed immediately.
+  approve-internal:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Internal PR — no approval required
+        run: echo "Internal PR — proceeding"
+
   init:
-    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    needs: [approve-fork, approve-internal]
+    # Run when exactly one of the approve gates succeeded (they are mutually exclusive).
+    if: >-
+      always() &&
+      (needs.approve-fork.result == 'success' || needs.approve-internal.result == 'success')
     runs-on: ubuntu-latest
 
     outputs:
       sdk-url: ${{ steps.urls.outputs.sdk-url }}
       image-urls: ${{ steps.urls.outputs.image-urls }}
-      pr-sha: ${{ steps.pr.outputs.sha }}
+      # Use the SHA from the trusted workflow_run event, NOT from the artifact.
+      # An artifact is written by the (potentially untrusted) producer runner and
+      # must not be used to select which commit is checked out and built here.
+      pr-sha: ${{ github.event.workflow_run.head_sha }}
       pr-number: ${{ steps.pr.outputs.number }}
 
     steps:
@@ -36,11 +68,10 @@ jobs:
           name: pr-context
           path: pr
 
-      - name: Read PR context
+      - name: Read PR number from artifact
         id: pr
         run: |
           echo "number=$(cat pr/NR)" >> "$GITHUB_OUTPUT"
-          echo "sha=$(cat pr/SHA)" >> "$GITHUB_OUTPUT"
 
       - name: Report pending status on PR
         uses: actions/github-script@v7
@@ -49,7 +80,7 @@ jobs:
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              sha: "${{ steps.pr.outputs.sha }}",
+              sha: "${{ github.event.workflow_run.head_sha }}",
               state: "pending",
               context: "QIMSDK_UAT_Compilation_PR",
               description: "Build running",
@@ -59,7 +90,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          ref: ${{ steps.pr.outputs.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           allow-unsafe-pr-checkout: true
 
       - name: Resolve SDK URL from latest wrynose nightly
@@ -81,7 +112,7 @@ jobs:
 
   report-status:
     needs: [init, build]
-    if: always()
+    if: always() && needs.init.result != 'skipped'
     runs-on: ubuntu-latest
     steps:
       - name: Report final status on PR
