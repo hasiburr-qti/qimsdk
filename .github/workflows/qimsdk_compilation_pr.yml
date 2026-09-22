@@ -8,8 +8,7 @@ run-name: "${{ github.event.workflow_run.display_title }}"
 #      GitHub event data), never from the artifact written by the fork runner.
 #   3. No ${{ }} template expressions appear in run: or script: blocks —
 #      attacker-reachable values are passed through env: vars instead.
-# zizmor: ignore[dangerous-triggers]
-on:
+on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     workflows: ["QIMSDK_UAT_Compilation"]
     types: [completed]
